@@ -1,20 +1,11 @@
 import os
-
-os.environ['HF_HOME'] = os.path.join(os.path.dirname(__file__), 'hf_download')
-result_dir = os.path.join('./', 'results')
-os.makedirs(result_dir, exist_ok=True)
-
-
 import functools
-import os
 import random
-import gradio as gr
 import numpy as np
 import torch
 import wd14tagger
 import memory_management
 import uuid
-
 from PIL import Image
 from diffusers_helper.code_cond import unet_add_coded_conds
 from diffusers_helper.cat_cond import unet_add_concat_conds
@@ -25,6 +16,10 @@ from transformers import CLIPTextModel, CLIPTokenizer
 from diffusers_vdm.pipeline import LatentVideoDiffusionPipeline
 from diffusers_vdm.utils import resize_and_center_crop, save_bcthw_as_mp4
 
+# Set environment variables and directories
+os.environ['HF_HOME'] = os.path.join(os.path.dirname(__file__), 'hf_download')
+result_dir = os.path.join('./', 'results')
+os.makedirs(result_dir, exist_ok=True)
 
 class ModifiedUNet(UNet2DConditionModel):
     @classmethod
@@ -34,11 +29,11 @@ class ModifiedUNet(UNet2DConditionModel):
         unet_add_coded_conds(unet=m, added_number_count=1)
         return m
 
-
+# Load models
 model_name = 'lllyasviel/paints_undo_single_frame'
 tokenizer = CLIPTokenizer.from_pretrained(model_name, subfolder="tokenizer")
 text_encoder = CLIPTextModel.from_pretrained(model_name, subfolder="text_encoder").to(torch.float16)
-vae = AutoencoderKL.from_pretrained(model_name, subfolder="vae").to(torch.bfloat16)  # bfloat16 vae
+vae = AutoencoderKL.from_pretrained(model_name, subfolder="vae").to(torch.bfloat16)
 unet = ModifiedUNet.from_pretrained(model_name, subfolder="unet").to(torch.float16)
 
 unet.set_attn_processor(AttnProcessor2_0())
@@ -62,7 +57,6 @@ k_sampler = KDiffusionSampler(
     linear=True
 )
 
-
 def find_best_bucket(h, w, options):
     min_metric = float('inf')
     best_bucket = None
@@ -72,7 +66,6 @@ def find_best_bucket(h, w, options):
             min_metric = metric
             best_bucket = (bucket_h, bucket_w)
     return best_bucket
-
 
 @torch.inference_mode()
 def encode_cropped_prompt_77tokens(txt: str):
@@ -85,7 +78,6 @@ def encode_cropped_prompt_77tokens(txt: str):
     text_cond = text_encoder(cond_ids, attention_mask=None).last_hidden_state
     return text_cond
 
-
 @torch.inference_mode()
 def pytorch2numpy(imgs):
     results = []
@@ -96,28 +88,23 @@ def pytorch2numpy(imgs):
         results.append(y)
     return results
 
-
 @torch.inference_mode()
 def numpy2pytorch(imgs):
     h = torch.from_numpy(np.stack(imgs, axis=0)).float() / 127.5 - 1.0
     h = h.movedim(-1, 1)
     return h
 
-
 def resize_without_crop(image, target_width, target_height):
     pil_image = Image.fromarray(image)
     resized_image = pil_image.resize((target_width, target_height), Image.LANCZOS)
     return np.array(resized_image)
 
-
 @torch.inference_mode()
 def interrogator_process(x):
     return wd14tagger.default_interrogator(x)
 
-
 @torch.inference_mode()
-def process(input_fg, prompt, input_undo_steps, image_width, image_height, seed, steps, n_prompt, cfg,
-            progress=gr.Progress()):
+def process(input_fg, prompt, input_undo_steps, image_width, image_height, seed, steps, n_prompt, cfg):
     rng = torch.Generator(device=memory_management.gpu).manual_seed(int(seed))
 
     memory_management.load_models_to_gpu(vae)
@@ -143,8 +130,7 @@ def process(input_fg, prompt, input_undo_steps, image_width, image_height, seed,
         prompt_embeds=conds,
         negative_prompt_embeds=unconds,
         cross_attention_kwargs={'concat_conds': concat_conds, 'coded_conds': fs},
-        same_noise_in_batch=True,
-        progress_tqdm=functools.partial(progress.tqdm, desc='Generating Key Frames')
+        same_noise_in_batch=True
     ).to(vae.dtype) / vae.config.scaling_factor
 
     memory_management.load_models_to_gpu(vae)
@@ -154,9 +140,8 @@ def process(input_fg, prompt, input_undo_steps, image_width, image_height, seed,
 
     return pixels
 
-
 @torch.inference_mode()
-def process_video_inner(image_1, image_2, prompt, seed=123, steps=25, cfg_scale=7.5, fs=3, progress_tqdm=None):
+def process_video_inner(image_1, image_2, prompt, seed=123, steps=25, cfg_scale=7.5, fs=3):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -202,17 +187,15 @@ def process_video_inner(image_1, image_2, prompt, seed=123, steps=25, cfg_scale=
         positive_image_cond=positive_image_cond,
         negative_image_cond=negative_image_cond,
         concat_cond=concat_cond,
-        fs=fs,
-        progress_tqdm=progress_tqdm
+        fs=fs
     )
 
     memory_management.load_models_to_gpu([video_pipe.vae])
     video = video_pipe.decode_latents(latents, vae_hidden_states)
     return video, image_1, image_2
 
-
 @torch.inference_mode()
-def process_video(keyframes, prompt, steps, cfg, fps, seed, progress=gr.Progress()):
+def process_video(keyframes, prompt, steps, cfg, fps, seed):
     result_frames = []
     cropped_images = []
 
@@ -220,8 +203,7 @@ def process_video(keyframes, prompt, steps, cfg, fps, seed, progress=gr.Progress
         im1 = np.array(Image.open(im1[0]))
         im2 = np.array(Image.open(im2[0]))
         frames, im1, im2 = process_video_inner(
-            im1, im2, prompt, seed=seed + i, steps=steps, cfg_scale=cfg, fs=3,
-            progress_tqdm=functools.partial(progress.tqdm, desc=f'Generating Videos ({i + 1}/{len(keyframes) - 1})')
+            im1, im2, prompt, seed=seed + i, steps=steps, cfg_scale=cfg, fs=3
         )
         result_frames.append(frames[:, :, :-1, :, :])
         cropped_images.append([im1, im2])
@@ -236,86 +218,33 @@ def process_video(keyframes, prompt, steps, cfg, fps, seed, progress=gr.Progress
     video = [x.cpu().numpy() for x in video]
     return output_filename, video
 
+def main():
+    # Example usage
+    input_fg = np.array(Image.open('path_to_image.png'))
+    prompt = "A beautiful painting"
+    input_undo_steps = [400, 600, 800, 900, 950, 999]
+    image_width = 512
+    image_height = 640
+    seed = 12345
+    steps = 50
+    n_prompt = 'lowres, bad anatomy, bad hands, cropped, worst quality'
+    cfg = 3.0
 
-block = gr.Blocks().queue()
-with block:
-    gr.Markdown('# Paints-Undo')
+    # Generate key frames
+    key_frames = process(input_fg, prompt, input_undo_steps, image_width, image_height, seed, steps, n_prompt, cfg)
+    for i, frame in enumerate(key_frames):
+        Image.fromarray(frame).save(f'key_frame_{i}.png')
 
-    with gr.Accordion(label='Step 1: Upload Image and Generate Prompt', open=True):
-        with gr.Row():
-            with gr.Column():
-                input_fg = gr.Image(sources=['upload'], type="numpy", label="Image", height=512)
-            with gr.Column():
-                prompt_gen_button = gr.Button(value="Generate Prompt", interactive=False)
-                prompt = gr.Textbox(label="Output Prompt", interactive=True)
+    # Generate video
+    keyframe_paths = [(f'key_frame_{i}.png',) for i in range(len(key_frames))]
+    video_prompt = "1girl, masterpiece, best quality"
+    video_steps = 50
+    video_cfg = 7.5
+    video_fps = 4
+    video_seed = 123
 
-    with gr.Accordion(label='Step 2: Generate Key Frames', open=True):
-        with gr.Row():
-            with gr.Column():
-                input_undo_steps = gr.Dropdown(label="Operation Steps", value=[400, 600, 800, 900, 950, 999],
-                                               choices=list(range(1000)), multiselect=True)
-                seed = gr.Slider(label='Stage 1 Seed', minimum=0, maximum=50000, step=1, value=12345)
-                image_width = gr.Slider(label="Image Width", minimum=256, maximum=1024, value=512, step=64)
-                image_height = gr.Slider(label="Image Height", minimum=256, maximum=1024, value=640, step=64)
-                steps = gr.Slider(label="Steps", minimum=1, maximum=100, value=50, step=1)
-                cfg = gr.Slider(label="CFG Scale", minimum=1.0, maximum=32.0, value=3.0, step=0.01)
-                n_prompt = gr.Textbox(label="Negative Prompt",
-                                      value='lowres, bad anatomy, bad hands, cropped, worst quality')
+    video_path, video_frames = process_video(keyframe_paths, video_prompt, video_steps, video_cfg, video_fps, video_seed)
+    print(f'Video saved at: {video_path}')
 
-            with gr.Column():
-                key_gen_button = gr.Button(value="Generate Key Frames", interactive=False)
-                result_gallery = gr.Gallery(height=512, object_fit='contain', label='Outputs', columns=4)
-
-    with gr.Accordion(label='Step 3: Generate All Videos', open=True):
-        with gr.Row():
-            with gr.Column():
-                i2v_input_text = gr.Text(label='Prompts', value='1girl, masterpiece, best quality')
-                i2v_seed = gr.Slider(label='Stage 2 Seed', minimum=0, maximum=50000, step=1, value=123)
-                i2v_cfg_scale = gr.Slider(minimum=1.0, maximum=15.0, step=0.5, label='CFG Scale', value=7.5,
-                                          elem_id="i2v_cfg_scale")
-                i2v_steps = gr.Slider(minimum=1, maximum=60, step=1, elem_id="i2v_steps",
-                                      label="Sampling steps", value=50)
-                i2v_fps = gr.Slider(minimum=1, maximum=30, step=1, elem_id="i2v_motion", label="FPS", value=4)
-            with gr.Column():
-                i2v_end_btn = gr.Button("Generate Video", interactive=False)
-                i2v_output_video = gr.Video(label="Generated Video", elem_id="output_vid", autoplay=True,
-                                            show_share_button=True, height=512)
-        with gr.Row():
-            i2v_output_images = gr.Gallery(height=512, label="Output Frames", object_fit="contain", columns=8)
-
-    input_fg.change(lambda: ["", gr.update(interactive=True), gr.update(interactive=False), gr.update(interactive=False)],
-                    outputs=[prompt, prompt_gen_button, key_gen_button, i2v_end_btn])
-
-    prompt_gen_button.click(
-        fn=interrogator_process,
-        inputs=[input_fg],
-        outputs=[prompt]
-    ).then(lambda: [gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=False)],
-           outputs=[prompt_gen_button, key_gen_button, i2v_end_btn])
-
-    key_gen_button.click(
-        fn=process,
-        inputs=[input_fg, prompt, input_undo_steps, image_width, image_height, seed, steps, n_prompt, cfg],
-        outputs=[result_gallery]
-    ).then(lambda: [gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=True)],
-           outputs=[prompt_gen_button, key_gen_button, i2v_end_btn])
-
-    i2v_end_btn.click(
-        inputs=[result_gallery, i2v_input_text, i2v_steps, i2v_cfg_scale, i2v_fps, i2v_seed],
-        outputs=[i2v_output_video, i2v_output_images],
-        fn=process_video
-    )
-
-    dbs = [
-        ['./imgs/1.jpg', 12345, 123],
-        ['./imgs/2.jpg', 37000, 12345],
-        ['./imgs/3.jpg', 3000, 3000],
-    ]
-
-    gr.Examples(
-        examples=dbs,
-        inputs=[input_fg, seed, i2v_seed],
-        examples_per_page=1024
-    )
-
-block.queue().launch(server_name='0.0.0.0')
+if __name__ == "__main__":
+    main()
