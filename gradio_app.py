@@ -1,4 +1,5 @@
 import os
+import argparse
 import functools
 import random
 import numpy as np
@@ -219,31 +220,59 @@ def process_video(keyframes, prompt, steps, cfg, fps, seed):
     return output_filename, video
 
 def main():
-    # Example usage
-    input_fg = np.array(Image.open('path_to_image.png'))
-    prompt = "A beautiful painting"
-    input_undo_steps = [400, 600, 800, 900, 950, 999]
-    image_width = 512
-    image_height = 640
-    seed = 12345
-    steps = 50
-    n_prompt = 'lowres, bad anatomy, bad hands, cropped, worst quality'
-    cfg = 3.0
+    parser = argparse.ArgumentParser(description="Generate key frames and video from an input image.")
+    
+    # Arguments for key frame generation
+    parser.add_argument('--image_path', type=str, required=True, help='Path to the input image.')
+    parser.add_argument('--prompt', type=str, default="A beautiful painting", help='Prompt for key frame generation.')
+    parser.add_argument('--input_undo_steps', type=int, nargs='+', default=[400, 600, 800, 900, 950, 999], help='Undo steps for key frame generation.')
+    parser.add_argument('--image_width', type=int, default=512, help='Width of the generated images.')
+    parser.add_argument('--image_height', type=int, default=640, help='Height of the generated images.')
+    parser.add_argument('--seed', type=int, default=12345, help='Random seed for key frame generation.')
+    parser.add_argument('--steps', type=int, default=50, help='Number of steps for key frame generation.')
+    parser.add_argument('--n_prompt', type=str, default='lowres, bad anatomy, bad hands, cropped, worst quality', help='Negative prompt for key frame generation.')
+    parser.add_argument('--cfg', type=float, default=3.0, help='CFG scale for key frame generation.')
 
+    # Arguments for video generation
+    parser.add_argument('--video_prompt', type=str, default="1girl, masterpiece, best quality", help='Prompt for video generation.')
+    parser.add_argument('--video_steps', type=int, default=50, help='Number of steps for video generation.')
+    parser.add_argument('--video_cfg', type=float, default=7.5, help='CFG scale for video generation.')
+    parser.add_argument('--video_fps', type=int, default=4, help='FPS for the generated video.')
+    parser.add_argument('--video_seed', type=int, default=123, help='Random seed for video generation.')
+
+    args = parser.parse_args()
+
+    # Load input image
+    input_fg = np.array(Image.open(args.image_path))
+    
     # Generate key frames
-    key_frames = process(input_fg, prompt, input_undo_steps, image_width, image_height, seed, steps, n_prompt, cfg)
+    key_frames = process(
+        input_fg, 
+        args.prompt, 
+        args.input_undo_steps, 
+        args.image_width, 
+        args.image_height, 
+        args.seed, 
+        args.steps, 
+        args.n_prompt, 
+        args.cfg
+    )
+    
+    key_frame_paths = []
     for i, frame in enumerate(key_frames):
-        Image.fromarray(frame).save(f'key_frame_{i}.png')
+        key_frame_path = os.path.join(result_dir, f'key_frame_{i}.png')
+        Image.fromarray(frame).save(key_frame_path)
+        key_frame_paths.append((key_frame_path,))
 
     # Generate video
-    keyframe_paths = [(f'key_frame_{i}.png',) for i in range(len(key_frames))]
-    video_prompt = "1girl, masterpiece, best quality"
-    video_steps = 50
-    video_cfg = 7.5
-    video_fps = 4
-    video_seed = 123
-
-    video_path, video_frames = process_video(keyframe_paths, video_prompt, video_steps, video_cfg, video_fps, video_seed)
+    video_path, video_frames = process_video(
+        key_frame_paths, 
+        args.video_prompt, 
+        args.video_steps, 
+        args.video_cfg, 
+        args.video_fps, 
+        args.video_seed
+    )
     print(f'Video saved at: {video_path}')
 
 if __name__ == "__main__":
