@@ -110,6 +110,11 @@ def process(input_fg, prompt, input_undo_steps, image_width, image_height, seed,
 
     memory_management.load_models_to_gpu(vae)
     fg = resize_and_center_crop(input_fg, image_width, image_height)
+    
+    # Ensure the input has 3 channels
+    if fg.shape[2] == 4:
+        fg = fg[:, :, :3]
+    
     concat_conds = numpy2pytorch([fg]).to(device=vae.device, dtype=vae.dtype)
     concat_conds = vae.encode(concat_conds).latent_dist.mode() * vae.config.scaling_factor
 
