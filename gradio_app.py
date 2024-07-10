@@ -68,35 +68,6 @@ def find_best_bucket(h, w, options):
             best_bucket = (bucket_h, bucket_w)
     return best_bucket
 
-def calculate_aspect_ratio(width, height):
-    def gcd(a, b):
-        while b:
-            a, b = b, a % b
-        return a
-    
-    r = gcd(width, height)
-    x = width // r
-    y = height // r
-    
-    return x, y
-
-def find_best_resolution(width, height):
-    aspect_ratio = calculate_aspect_ratio(width, height)
-    options = [(256, 256), (320, 320), (384, 384), (448, 448), (512, 512), 
-               (576, 576), (640, 640), (704, 704), (768, 768), (832, 832),
-               (896, 896), (960, 960), (1024, 1024)]
-    
-    best_option = min(options, key=lambda x: abs(x[0]/x[1] - aspect_ratio[0]/aspect_ratio[1]))
-    
-    if best_option[0] / best_option[1] > aspect_ratio[0] / aspect_ratio[1]:
-        new_height = best_option[1]
-        new_width = int(new_height * (aspect_ratio[0] / aspect_ratio[1]))
-    else:
-        new_width = best_option[0]
-        new_height = int(new_width * (aspect_ratio[1] / aspect_ratio[0]))
-    
-    return new_width, new_height
-
 @torch.inference_mode()
 def encode_cropped_prompt_77tokens(txt: str):
     memory_management.load_models_to_gpu(text_encoder)
@@ -134,14 +105,10 @@ def interrogator_process(x):
     return wd14tagger.default_interrogator(x)
 
 @torch.inference_mode()
-def process(input_fg, prompt, input_undo_steps, seed, steps, n_prompt, cfg):
+def process(input_fg, prompt, input_undo_steps, image_width, image_height, seed, steps, n_prompt, cfg):
     rng = torch.Generator(device=memory_management.gpu).manual_seed(int(seed))
 
     memory_management.load_models_to_gpu(vae)
-    
-    # Calculate the best resolution
-    image_width, image_height = find_best_resolution(input_fg.shape[1], input_fg.shape[0])
-    
     fg = resize_and_center_crop(input_fg, image_width, image_height)
     
     # Ensure the input has 3 channels
@@ -188,8 +155,10 @@ def process_video_inner(image_1, image_2, prompt, seed=123, steps=25, cfg_scale=
 
     frames = 16
 
-    # Calculate the best resolution
-    target_width, target_height = find_best_resolution(image_1.shape[1], image_1.shape[0])
+    target_height, target_width = find_best_bucket(
+        image_1.shape[0], image_1.shape[1],
+        options=[(320, 512), (384, 448), (448, 384), (512, 320)]
+    )
 
     image_1 = resize_and_center_crop(image_1, target_width=target_width, target_height=target_height)
     image_2 = resize_and_center_crop(image_2, target_width=target_width, target_height=target_height)
@@ -262,6 +231,8 @@ def main():
     parser.add_argument('--image_path', type=str, required=True, help='Path to the input image.')
     parser.add_argument('--prompt', type=str, default="A beautiful painting", help='Prompt for key frame generation.')
     parser.add_argument('--input_undo_steps', type=int, nargs='+', default=[400, 600, 800, 900, 950, 999], help='Undo steps for key frame generation.')
+    parser.add_argument('--image_width', type=int, default=512, help='Width of the generated images.')
+    parser.add_argument('--image_height', type=int, default=640, help='Height of the generated images.')
     parser.add_argument('--seed', type=int, default=12345, help='Random seed for key frame generation.')
     parser.add_argument('--steps', type=int, default=50, help='Number of steps for key frame generation.')
     parser.add_argument('--n_prompt', type=str, default='lowres, bad anatomy, bad hands, cropped, worst quality', help='Negative prompt for key frame generation.')
@@ -284,6 +255,8 @@ def main():
         input_fg, 
         args.prompt, 
         args.input_undo_steps, 
+        args.image_width, 
+        args.image_height, 
         args.seed, 
         args.steps, 
         args.n_prompt, 
